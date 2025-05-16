@@ -1,6 +1,6 @@
 # 工具介绍
 
-SyncBuster是一个用于测试条件竞争漏洞的工具，用户只需要通过`Burpsuite`获取完整的http数据包后，粘贴至工具中即可同时发送两个请求包。<br>
+SyncBuster是一个用于测试条件竞争漏洞的工具，用户只需要通过`Burpsuite`获取完整的http数据包后，粘贴至工具中即可同时发送两个请求包。[English Documentation](https://github.com/Ernket/SyncBuster/blob/main/README_EN.md)<br>
 
 # 主要功能
 - 并发发送HTTP请求（目前仅支持两个请求包）
