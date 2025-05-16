@@ -345,7 +345,7 @@ class MainWindow(QMainWindow):
             signal_manager.log_signal.emit("调试模式已关闭 - 只显示关键信息和响应结果", "main")
         
     def init_ui(self):
-        self.setWindowTitle('SyncBuster')
+        self.setWindowTitle('SyncBuster - Auther: Elapse')
         self.setMinimumSize(1000, 900)  # 增大默认窗口大小
         
         # 设置主窗口样式
