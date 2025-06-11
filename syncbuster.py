@@ -314,26 +314,21 @@ class MainWindow(QMainWindow):
         signal_manager.log_signal.connect(self.on_log_message)
         
     def on_log_message(self, message, target):
-        """处理日志消息"""
-        # 如果不是调试模式，只过滤掉过程性日志，确保显示结果内容
+        # 非调试模式下只过滤掉已知的过程性日志，其它都显示
         if not self.debug_mode:
-            # 检查是否是过程性日志
-            if not any(keyword in message for keyword in [
-                "状态码:", "响应:", "body", "请求体", "⚠️", "❌", "✅",
-                "匹配结果", "匹配内容", "响应内容", "=====", "-----",
-                "使用第一个匹配值:"
-            ]):
+            process_keywords = [
+                "正在发送", "准备完成", "延迟", "超时", "重置按钮", "已重置", "开始并发请求处理"
+            ]
+            if any(keyword in message for keyword in process_keywords):
                 return
-            
+        # 其它内容都显示
         if target == "main":
             self.response_text.append(message)
-            # 滚动到底部
             self.response_text.moveCursor(QTextCursor.End)
         elif target == "followup":
             self.followup_response_text.append(message)
-            # 滚动到底部
             self.followup_response_text.moveCursor(QTextCursor.End)
-        
+
     def toggle_debug_mode(self):
         """切换调试模式"""
         self.debug_mode = not self.debug_mode
@@ -1126,19 +1121,33 @@ class MainWindow(QMainWindow):
             # 获取后续请求的正则表达式
             result_regex = self.followup_tab.get_result_regex()
             
-            # 如果设置了结果正则表达式，优先显示匹配结果
+            # 如果设置了结果正则表达式
             if result_regex and 'body' in followup_result:
-                extracted_result = self.extract_with_regex(followup_result['body'], result_regex, "followup")
-                if extracted_result:
-                    # 显示基本响应信息和匹配结果
+                # Modified: Call extract_with_regex which now returns a list of matches
+                extracted_results = self.extract_with_regex(followup_result['body'], result_regex, "followup")
+
+                # Modified: Check if the list of results is not empty
+                if extracted_results:
+                    # 显示基本响应信息
                     signal_manager.log_signal.emit("\n后续请求结果:", "followup")
                     signal_manager.log_signal.emit(f"状态码: {followup_result['status']} ({followup_result['time']})", "followup")
                     if 'request_time' in followup_result:
                         signal_manager.log_signal.emit(f"请求时间: {followup_result['request_time']}", "followup")
-                    signal_manager.log_signal.emit(f"匹配结果: {extracted_result}\n", "followup")
+
+                    # Modified: Iterate through all extracted results and display them
+                    signal_manager.log_signal.emit(f"匹配到 {len(extracted_results)} 个结果:", "followup")
+                    for i, match in enumerate(extracted_results):
+                        # Handle potential tuples returned by re.findall with groups
+                        if isinstance(match, tuple):
+                            # If it's a tuple, join the elements for display
+                            display_match = ", ".join(map(str, match))
+                        else:
+                            display_match = str(match)
+                        signal_manager.log_signal.emit(f"结果 {i+1}: {display_match}", "followup")
+                    signal_manager.log_signal.emit("", "followup") # Add empty line for spacing
                 else:
                     # 如果没有匹配结果，显示完整响应
-                    signal_manager.log_signal.emit("\n正则表达式未匹配到内容，显示完整响应:", "followup")
+                    signal_manager.log_signal.emit("\n正则表达式未匹配到任何内容，显示完整响应:", "followup")
                     self.display_response(followup_result, "followup")
             else:
                 # 如果没有设置正则表达式，显示完整响应
@@ -1178,97 +1187,64 @@ class MainWindow(QMainWindow):
         """使用正则表达式从响应中提取数据"""
         try:
             if not regex_pattern:
-                return None
-                
+                # Modified: Return an empty list if no pattern is provided
+                return []
+
             # 调试输出，帮助检查正则匹配问题
             if self.debug_mode:
-                signal_manager.log_signal.emit(f"正在使用正则表达式: '{regex_pattern}' 查找匹配", target)
+                signal_manager.log_signal.emit(f"正在使用正则表达式: \'{regex_pattern}\' 查找匹配", target)
                 signal_manager.log_signal.emit(f"响应长度: {len(response_text)} 字符", target)
                 # 输出响应的前100个字符，帮助调试
                 preview = response_text[:min(100, len(response_text))]
                 signal_manager.log_signal.emit(f"响应预览: {preview}...", target)
-                
+
                 # 检查是否存在转义的引号
                 if '\\"' in response_text:
-                    signal_manager.log_signal.emit(f"警告: 响应中包含转义的引号 \\\"，可能需要调整正则表达式", target)
-            
+                    signal_manager.log_signal.emit(f"警告: 响应中包含转义的引号 \\\\\"", target) # Escaped the backslash
+
             # 尝试使用原始的正则表达式
             try:
-                # 使用findall查找匹配项
+                # 使用findall查找所有匹配项
                 matches = re.findall(regex_pattern, response_text)
-                
+
                 if matches:
-                    # 直接返回第一个匹配项
-                    return matches[0]
+                    # Modified: Return the list of all matches
+                    if self.debug_mode:
+                         signal_manager.log_signal.emit(f"成功匹配到 {len(matches)} 项结果", target)
+                    return matches
             except Exception as regex_err:
-                # 如果原始正则表达式出错，记录错误，但继续尝试其他方法
+                # 如果原始正则表达式出错，记录错误，但返回空列表
                 if self.debug_mode:
                     signal_manager.log_signal.emit(f"原始正则表达式错误: {str(regex_err)}", target)
-            
-            # 检查\s是否需要双重转义
-            if '\\s' not in regex_pattern and r'\s' in regex_pattern:
-                try:
-                    # 尝试双重转义
-                    fixed_pattern = regex_pattern.replace(r'\s', r'\\s')
-                    if self.debug_mode:
-                        signal_manager.log_signal.emit(f"尝试修复的正则表达式: {fixed_pattern}", target)
-                    matches = re.findall(fixed_pattern, response_text)
-                    if matches:
-                        return matches[0]
-                except Exception as fixed_err:
-                    if self.debug_mode:
-                        signal_manager.log_signal.emit(f"修复尝试失败: {str(fixed_err)}", target)
-            
-            # 自动检测并修复其他常见的正则表达式错误
-            if '"' in regex_pattern:
-                # 检查可能遗漏的转义字符
-                common_escapes = ['\\d', '\\w', '\\b', '\\S', '\\s']
-                for esc in common_escapes:
-                    if esc[1:] in regex_pattern and esc not in regex_pattern:
-                        try:
-                            fixed_pattern = regex_pattern.replace(esc[1:], esc)
-                            if self.debug_mode:
-                                signal_manager.log_signal.emit(f"尝试修复转义字符: {fixed_pattern}", target)
-                            matches = re.findall(fixed_pattern, response_text)
-                            if matches:
-                                return matches[0]
-                        except Exception:
-                            pass
-            
-            # 提供更详细的匹配失败信息
-            if self.debug_mode:
-                signal_manager.log_signal.emit(f"正则表达式没有匹配到任何内容", target)
-                # 检查是否包含JSON特殊字符，可能需要转义
-                if '"' in regex_pattern:
-                    signal_manager.log_signal.emit(f"💡 提示: 正则表达式包含引号，请确保JSON中的引号和双引号都已正确处理", target)
-                if '\\' not in regex_pattern and ('{' in regex_pattern or '}' in regex_pattern):
-                    signal_manager.log_signal.emit(f"💡 提示: 正则表达式包含花括号，可能需要转义: '\\{{' 和 '\\}}'", target)
-                if '\\s' not in regex_pattern and r'\s' in regex_pattern:
-                    signal_manager.log_signal.emit(f"💡 提示: Python字符串中的\\s应该写成\\\\s才能正确匹配空白字符", target)
-                    
-            signal_manager.log_signal.emit(f"❌ 正则表达式未匹配到内容", target)
-            return None
+                # Modified: Return empty list on error
+                return []
+
+            # Modified: Return empty list if no matches found after all attempts
+            signal_manager.log_signal.emit(f"❌ 正则表达式未匹配到任何内容", target)
+            return []
+
         except Exception as e:
             signal_manager.log_signal.emit(f"正则表达式提取错误: {str(e)}", target)
             if self.debug_mode:
                 signal_manager.log_signal.emit(f"错误详情: {traceback.format_exc()}", target)
-            return None
+            # Modified: Return empty list on exception
+            return []
 
     def prepare_followup_request(self, results):
         """准备后续请求"""
         try:
             if not self.followup_tab.is_enabled():
                 return None
-                
+
             # 获取数据源
             source = self.followup_tab.get_source()
             source_idx = 0 if source == "request1" else 1
-            
+
             # 获取响应文本
             if 0 <= source_idx < len(results):
                 response_text = results[source_idx].get('body', '')
                 signal_manager.log_signal.emit(f"使用 {results[source_idx]['label']} 的响应作为数据源", "followup")
-                
+
                 # 调试输出
                 if self.debug_mode:
                     preview = response_text[:min(200, len(response_text))]
@@ -1276,29 +1252,43 @@ class MainWindow(QMainWindow):
             else:
                 signal_manager.log_signal.emit(f"⚠️ 警告: 无法找到选择的数据源", "followup")
                 return None
-            
+
             # 提取正则表达式结果
             regex = self.followup_tab.get_regex()
-            extracted_value = self.extract_with_regex(response_text, regex, "followup") if regex else ""
-            
-            if not extracted_value and regex:
-                signal_manager.log_signal.emit(f"警告: 正则表达式 '{regex}' 未能匹配任何内容", "followup")
+            # extracted_values will be a list of all matches
+            extracted_values = self.extract_with_regex(response_text, regex, "followup") if regex else []
+
+            # Modified: Get the first extracted value for replacement, if the list is not empty
+            extracted_value_for_template = ""
+            if extracted_values:
+                 # Handle potential tuples returned by re.findall with groups - take the first element of the first match
+                first_match = extracted_values[0]
+                if isinstance(first_match, tuple):
+                    # If it's a tuple, take the first element of the tuple
+                    if first_match:
+                         extracted_value_for_template = str(first_match[0])
+                else:
+                    # If it's not a tuple (e.g., single group or full match), use the match directly
+                    extracted_value_for_template = str(first_match)
+
+            if not extracted_value_for_template and regex:
+                signal_manager.log_signal.emit(f"警告: 正则表达式 '{regex}' 未能匹配任何内容或提取第一个有效值", "followup")
                 if self.debug_mode:
                     signal_manager.log_signal.emit(f"尝试匹配的原始文本: {response_text[:100]}...", "followup")
-            
+
+
             # 获取请求模板并替换提取的值
             request_template = self.followup_tab.get_request_template()
             if not request_template.strip():
                 signal_manager.log_signal.emit("错误: 后续请求模板为空", "followup")
                 return None
-                
+
+            # Modified: Use the single extracted_value_for_template for replacement
             if "{{regex_result}}" in request_template:
-                if extracted_value:
-                    signal_manager.log_signal.emit(f"将提取的值 [{extracted_value}] 替换到请求模板中", "followup")
-                    request_template = request_template.replace("{{regex_result}}", extracted_value)
-                else:
-                    signal_manager.log_signal.emit("⚠️ 警告: 未能提取值但模板中包含{{regex_result}}占位符", "followup")
-            
+                signal_manager.log_signal.emit(f"将提取的值 [{extracted_value_for_template}] 替换到请求模板中", "followup")
+                request_template = request_template.replace("{{regex_result}}", extracted_value_for_template)
+
+
             # 解析请求模板
             return self.parse_http_request(request_template)
         except Exception as e:
