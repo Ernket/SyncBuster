@@ -195,7 +195,7 @@ class FollowupRequestTab(QWidget):
         json_example1.triggered.connect(lambda: self.insert_regex_example("\"name\":\"(.*?)\""))
         
         json_example2 = QAction("单JSON字段（推荐）: \"result\"\\s*:*\"([^\"]+)\"", self)
-        json_example2.triggered.connect(lambda: self.insert_regex_example("\"key\"\\s*:\\s*\"([^\"]+)\""))
+        json_example2.triggered.connect(lambda: self.insert_regex_example("\"result\"\\s:\\s*\"([^\"]+)\""))
         
         json_example3 = QAction("指定上下文: \"prefix\":\"(.*?)\",\"suffix\"", self)
         json_example3.triggered.connect(lambda: self.insert_regex_example("\"prefix\":\"(.*?)\",\"suffix\""))
@@ -233,7 +233,7 @@ class FollowupRequestTab(QWidget):
         json_example1.triggered.connect(lambda: self.insert_result_regex_example("\"name\":\"(.*?)\""))
         
         json_example2 = QAction("单JSON字段（推荐）: \"result\"\\s*:*\"([^\"]+)\"", self)
-        json_example2.triggered.connect(lambda: self.insert_result_regex_example("\"key\"\\s*:\\s*\"([^\"]+)\""))
+        json_example2.triggered.connect(lambda: self.insert_result_regex_example("\"result\"\\s:\\s*\"([^\"]+)\""))
         
         json_example3 = QAction("指定上下文: \"prefix\":\"(.*?)\",\"suffix\"", self)
         json_example3.triggered.connect(lambda: self.insert_result_regex_example("\"prefix\":\"(.*?)\",\"suffix\""))
@@ -501,13 +501,22 @@ class MainWindow(QMainWindow):
     def parse_http_request(self, raw_request, force_protocol=None):
         """解析HTTP原始请求"""
         try:
-            # 分离请求头和请求体
-            parts = raw_request.split('\n\n', 1)
-            headers_block = parts[0]
-            body = parts[1] if len(parts) > 1 else ''
+            normalized_request = raw_request.replace('\r\n', '\n')
+
+            header_body_separator_pos = normalized_request.find('\n\n')
             
-            # 解析请求行
-            header_lines = headers_block.split('\n')
+            if header_body_separator_pos == -1:
+                headers_block = normalized_request
+                body = ''
+            else:
+                headers_block = normalized_request[:header_body_separator_pos]
+                body = normalized_request[header_body_separator_pos + 2:].strip()
+
+            header_lines = [line.strip() for line in headers_block.split('\n') if line.strip()]
+
+            if not header_lines:
+                return {'error': '请求头为空，无法解析请求'}
+            
             request_line = header_lines[0]
             request_parts = request_line.split(' ')
             
@@ -517,23 +526,20 @@ class MainWindow(QMainWindow):
             method = request_parts[0]
             path = request_parts[1]
             
-            # 解析请求头
+            # Parse headers
             headers = {}
-            cookie_found = False  # 用于跟踪是否找到Cookie头
+            cookie_found = False
             
             for line in header_lines[1:]:
-                line = line.strip()
-                if line:
-                    parts = line.split(':', 1)
-                    if len(parts) == 2:
-                        key, value = parts
-                        key = key.strip()
-                        value = value.strip()
-                        headers[key] = value
-                        
-                        # 标记是否找到Cookie头
-                        if key.lower() == 'cookie':
-                            cookie_found = True
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    key, value = parts
+                    key = key.strip()
+                    value = value.strip()
+                    headers[key] = value
+                    
+                    if key.lower() == 'cookie':
+                        cookie_found = True
             
             # 如果没有找到Cookie头，发出警告
             if not cookie_found and self.debug_mode:
@@ -545,27 +551,33 @@ class MainWindow(QMainWindow):
                 return {'error': '缺少Host头，无法构建完整URL'}
             
             # 构建完整URL
-            scheme = "auto"
+            scheme = "http"
             if force_protocol:
                 scheme = force_protocol
             else:
-                # 自动检测协议
-                scheme = 'https' if 'https' in headers.get('Host', '').lower() else 'http'
+                host_lower = host.lower()
+                if host_lower.startswith('https://'):
+                    scheme = 'https'
+                elif host_lower.startswith('http://'):
+                    scheme = 'http'
             
-            # 根据scheme构建URL
-            if scheme == "auto":
-                scheme = 'https' if 'https' in headers.get('Host', '').lower() else 'http'
+            # 确保Host头不包含协议前缀
+            if host.startswith('http://'):
+                host = host[len('http://'):]
+            elif host.startswith('https://'):
+                host = host[len('https://'):]
             
+            # 重新构建URL，确保协议正确
             url = f"{scheme}://{host}{path}"
             
             return {
                 'method': method,
                 'url': url,
                 'headers': headers,
-                'body': body.strip(),
-                'raw_request': raw_request,  # 保存原始请求，用于直接发送
-                'has_cookie': cookie_found,   # 标记是否有Cookie
-                'protocol': scheme  # 记录使用的协议
+                'body': body,
+                'raw_request': raw_request,
+                'has_cookie': cookie_found,
+                'protocol': scheme
             }
         except Exception as e:
             signal_manager.log_signal.emit(f"解析HTTP请求失败: {str(e)}", "main")
@@ -841,7 +853,7 @@ class MainWindow(QMainWindow):
             delay = tab.get_delay() if hasattr(tab, 'get_delay') else 0
             if delay > 0:
                 signal_manager.log_signal.emit(f"⏱️ {label} 延迟 {delay} 秒...", target_log)
-                # 使用同步sleep延迟
+                # 强制延时模块
                 time.sleep(delay)
                 now = time.strftime("%H:%M:%S", time.localtime())
                 now = now + ".{:03d}".format(int(time.time() * 1000) % 1000)
@@ -911,7 +923,7 @@ class MainWindow(QMainWindow):
         try:
             signal_manager.result_ready_signal.disconnect(self.process_results)
         except:
-            pass  # 如果没有连接，会抛出异常，我们忽略它
+            pass  # 如果没有连接，忽略它
             
         # 禁用发送按钮，防止重复点击
         self.send_button.setEnabled(False)
@@ -1123,10 +1135,8 @@ class MainWindow(QMainWindow):
             
             # 如果设置了结果正则表达式
             if result_regex and 'body' in followup_result:
-                # Modified: Call extract_with_regex which now returns a list of matches
                 extracted_results = self.extract_with_regex(followup_result['body'], result_regex, "followup")
 
-                # Modified: Check if the list of results is not empty
                 if extracted_results:
                     # 显示基本响应信息
                     signal_manager.log_signal.emit("\n后续请求结果:", "followup")
@@ -1134,17 +1144,15 @@ class MainWindow(QMainWindow):
                     if 'request_time' in followup_result:
                         signal_manager.log_signal.emit(f"请求时间: {followup_result['request_time']}", "followup")
 
-                    # Modified: Iterate through all extracted results and display them
                     signal_manager.log_signal.emit(f"匹配到 {len(extracted_results)} 个结果:", "followup")
                     for i, match in enumerate(extracted_results):
-                        # Handle potential tuples returned by re.findall with groups
                         if isinstance(match, tuple):
-                            # If it's a tuple, join the elements for display
+                            # 有多个结果，则全部输出
                             display_match = ", ".join(map(str, match))
                         else:
                             display_match = str(match)
                         signal_manager.log_signal.emit(f"结果 {i+1}: {display_match}", "followup")
-                    signal_manager.log_signal.emit("", "followup") # Add empty line for spacing
+                    signal_manager.log_signal.emit("", "followup")
                 else:
                     # 如果没有匹配结果，显示完整响应
                     signal_manager.log_signal.emit("\n正则表达式未匹配到任何内容，显示完整响应:", "followup")
@@ -1187,7 +1195,6 @@ class MainWindow(QMainWindow):
         """使用正则表达式从响应中提取数据"""
         try:
             if not regex_pattern:
-                # Modified: Return an empty list if no pattern is provided
                 return []
 
             # 调试输出，帮助检查正则匹配问题
@@ -1200,7 +1207,7 @@ class MainWindow(QMainWindow):
 
                 # 检查是否存在转义的引号
                 if '\\"' in response_text:
-                    signal_manager.log_signal.emit(f"警告: 响应中包含转义的引号 \\\\\"", target) # Escaped the backslash
+                    signal_manager.log_signal.emit(f"警告: 响应中包含转义的引号 \\\\\"", target)
 
             # 尝试使用原始的正则表达式
             try:
@@ -1208,7 +1215,6 @@ class MainWindow(QMainWindow):
                 matches = re.findall(regex_pattern, response_text)
 
                 if matches:
-                    # Modified: Return the list of all matches
                     if self.debug_mode:
                          signal_manager.log_signal.emit(f"成功匹配到 {len(matches)} 项结果", target)
                     return matches
@@ -1216,10 +1222,8 @@ class MainWindow(QMainWindow):
                 # 如果原始正则表达式出错，记录错误，但返回空列表
                 if self.debug_mode:
                     signal_manager.log_signal.emit(f"原始正则表达式错误: {str(regex_err)}", target)
-                # Modified: Return empty list on error
                 return []
 
-            # Modified: Return empty list if no matches found after all attempts
             signal_manager.log_signal.emit(f"❌ 正则表达式未匹配到任何内容", target)
             return []
 
@@ -1227,7 +1231,6 @@ class MainWindow(QMainWindow):
             signal_manager.log_signal.emit(f"正则表达式提取错误: {str(e)}", target)
             if self.debug_mode:
                 signal_manager.log_signal.emit(f"错误详情: {traceback.format_exc()}", target)
-            # Modified: Return empty list on exception
             return []
 
     def prepare_followup_request(self, results):
@@ -1255,20 +1258,16 @@ class MainWindow(QMainWindow):
 
             # 提取正则表达式结果
             regex = self.followup_tab.get_regex()
-            # extracted_values will be a list of all matches
             extracted_values = self.extract_with_regex(response_text, regex, "followup") if regex else []
 
-            # Modified: Get the first extracted value for replacement, if the list is not empty
             extracted_value_for_template = ""
             if extracted_values:
-                 # Handle potential tuples returned by re.findall with groups - take the first element of the first match
                 first_match = extracted_values[0]
                 if isinstance(first_match, tuple):
-                    # If it's a tuple, take the first element of the tuple
+                    # 有多个，选一个
                     if first_match:
                          extracted_value_for_template = str(first_match[0])
                 else:
-                    # If it's not a tuple (e.g., single group or full match), use the match directly
                     extracted_value_for_template = str(first_match)
 
             if not extracted_value_for_template and regex:
@@ -1283,7 +1282,6 @@ class MainWindow(QMainWindow):
                 signal_manager.log_signal.emit("错误: 后续请求模板为空", "followup")
                 return None
 
-            # Modified: Use the single extracted_value_for_template for replacement
             if "{{regex_result}}" in request_template:
                 signal_manager.log_signal.emit(f"将提取的值 [{extracted_value_for_template}] 替换到请求模板中", "followup")
                 request_template = request_template.replace("{{regex_result}}", extracted_value_for_template)
@@ -1317,7 +1315,6 @@ def main():
     window = MainWindow()
     window.show()
     
-    # 设置应用程序样式
     app.setStyle("Fusion")
     
     # 打印版本信息
@@ -1327,16 +1324,15 @@ def main():
     signal_manager.log_signal.emit("使用多线程实现真正的并发请求", "main")
     signal_manager.log_signal.emit("\n---功能说明---", "main")
     signal_manager.log_signal.emit("1. 请求延迟：每个请求可单独设置延时，延时将在发送前等待指定秒数", "main")
-    signal_manager.log_signal.emit("2. 延时效果：请求1延时1秒，请求2无延时，则请求2会先发出，请求1晚1秒发出", "main")
+    signal_manager.log_signal.emit("2. 延时效果：请求1延时1秒，请求2无延时，则请求2会先发出，请求1晚1秒发出（最小0.1）", "main")
     signal_manager.log_signal.emit("3. 响应结果按请求标签分组显示，包含精确的发送时间和状态码", "main")
-    signal_manager.log_signal.emit("4. 调试模式可显示更多细节，有助于定位问题", "main")
+    signal_manager.log_signal.emit("4. 如果请求的内容存在异常，请开启调试模式查看实际发送内容", "main")
     signal_manager.log_signal.emit("5. 后续请求可从前两个请求的响应中提取数据并发送新请求", "main")
     signal_manager.log_signal.emit("---使用提示---", "main")
     signal_manager.log_signal.emit("* 如果正则表达式无法匹配，请开启调试模式查看更多信息", "main")
-    signal_manager.log_signal.emit("* 设置延时可测试接口竞态条件或保持请求顺序", "main")
+    signal_manager.log_signal.emit("* 设置延时可让数据包定时发送,方便根据响应时间去调整", "main")
     signal_manager.log_signal.emit("* HTTP请求包格式需严格遵循标准格式，头部与正文间用空行分隔\n", "main")
     
-    # 运行应用程序
     sys.exit(app.exec())
 
 if __name__ == '__main__':
